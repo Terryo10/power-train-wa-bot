@@ -22,6 +22,7 @@ class Order extends Model
         'delivery_address',
         'status',
         'driver_id',
+        'payment_status',
     ];
 
     /**
@@ -30,6 +31,13 @@ class Order extends Model
     public const STATUS_PENDING = 'pending';
     public const STATUS_IN_PROGRESS = 'in_progress';
     public const STATUS_DELIVERED = 'delivered';
+
+    /**
+     * The payment status values an order can have.
+     */
+    public const PAYMENT_STATUS_UNPAID = 'unpaid';
+    public const PAYMENT_STATUS_PARTIALLY_PAID = 'partially_paid';
+    public const PAYMENT_STATUS_PAID = 'paid';
 
     /**
      * Get the items for the order.
@@ -45,6 +53,14 @@ class Order extends Model
     public function driver(): BelongsTo
     {
         return $this->belongsTo(Driver::class);
+    }
+
+    /**
+     * Get the payment transactions for the order.
+     */
+    public function paymentTransactions(): HasMany
+    {
+        return $this->hasMany(PaymentTransaction::class);
     }
 
     /**
@@ -72,6 +88,22 @@ class Order extends Model
     }
 
     /**
+     * Scope a query to only include unpaid orders.
+     */
+    public function scopeUnpaid($query)
+    {
+        return $query->where('payment_status', self::PAYMENT_STATUS_UNPAID);
+    }
+
+    /**
+     * Scope a query to only include paid orders.
+     */
+    public function scopePaid($query)
+    {
+        return $query->where('payment_status', self::PAYMENT_STATUS_PAID);
+    }
+
+    /**
      * Calculate the total amount for this order.
      */
     public function getTotalAmount()
@@ -79,6 +111,32 @@ class Order extends Model
         return $this->items->sum(function ($item) {
             return $item->quantity * $item->unit_price;
         });
+    }
+
+    /**
+     * Calculate the total paid amount for this order.
+     */
+    public function getTotalPaidAmount()
+    {
+        return $this->paymentTransactions()
+            ->where('status', 'completed')
+            ->sum('amount');
+    }
+
+    /**
+     * Calculate the remaining amount to be paid.
+     */
+    public function getRemainingAmount()
+    {
+        return max(0, $this->getTotalAmount() - $this->getTotalPaidAmount());
+    }
+
+    /**
+     * Check if the order is fully paid.
+     */
+    public function isFullyPaid()
+    {
+        return $this->payment_status === self::PAYMENT_STATUS_PAID;
     }
 
     /**
