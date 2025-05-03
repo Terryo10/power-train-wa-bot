@@ -6,10 +6,15 @@ use App\Models\Driver;
 use App\Models\Order;
 use App\Models\OrderItem;
 use App\Models\Product;
+use App\Models\PaymentMethod;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
+use Filament\Notifications\Notification;
+use App\Models\PaymentTransaction; // Add this line to import the PaymentTransaction class
 use Twilio\Rest\Client;
+use App\Models\User;
 use GuzzleHttp\Client as HttpClient;
+use App\Models\BankTransferDetail; // Import the correct BankTransferDetail class
 
 class WhatsAppService
 {
@@ -968,5 +973,198 @@ class WhatsAppService
 
             return $this->sendMessage($phone, $fallbackMessage);
         }
+    }
+
+    // Add these functions to the WhatsAppService class
+
+    /**
+     * Handle payment-related commands from customer WhatsApp messages.
+     */
+    private function handlePaymentMessage($from, $body, $sessionData = null)
+    {
+        $body = strtoupper(trim($body));
+
+        // Check for "PAID" message for bank transfers
+        if ($body === 'PAID' || strpos($body, 'PAID') !== false) {
+            // Find the customer's pending bank transfer transactions
+            $customer = Order::where('customer_phone', $from)
+                ->whereHas('paymentTransactions', function ($query) {
+                    $query->whereHas('paymentMethod', function ($q) {
+                        $q->where('code', 'bank_transfer');
+                    })
+                        ->whereIn('status', ['pending', 'processing']);
+                })
+                ->with(['paymentTransactions' => function ($query) {
+                    $query->whereHas('paymentMethod', function ($q) {
+                        $q->where('code', 'bank_transfer');
+                    })
+                        ->whereIn('status', ['pending', 'processing']);
+                }])
+                ->latest()
+                ->first();
+
+            if ($customer && $customer->paymentTransactions->isNotEmpty()) {
+                $transaction = $customer->paymentTransactions->first();
+
+                // Notify admin about payment confirmation
+                $admins = User::where('is_admin', true)->get();
+                foreach ($admins as $admin) {
+                    Notification::make()
+                        ->title('Bank Transfer Payment Notification')
+                        ->body("Customer {$customer->customer_name} claims to have paid for Order #{$customer->id}. Please verify the payment.")
+                        ->actions([
+                            \Filament\Notifications\Actions\Action::make('view')
+                                ->url(route('filament.admin.resources.payment-transactions.edit', $transaction))
+                        ])
+                        ->sendToDatabase($admin);
+                }
+
+                // Send confirmation to customer
+                return $this->sendMessage(
+                    $from,
+                    "Thank you for your payment notification. Our team will verify your payment for Order #{$customer->id} and update you once confirmed."
+                );
+            }
+        }
+
+        // Handle other payment-related commands as needed
+        return false;
+    }
+
+    /**
+     * Send payment request to customer.
+     */
+    public function sendPaymentRequest(Order $order, $message = null)
+    {
+        if (!$message) {
+            // Get active payment methods
+            $paymentMethods = PaymentMethod::active()->get();
+
+            $message = "Your Order #{$order->id} for \${$order->getTotalAmount()} has been confirmed.\n\n";
+
+            if ($order->payment_status !== Order::PAYMENT_STATUS_PAID) {
+                $message .= "Please select a payment method:\n\n";
+
+                foreach ($paymentMethods as $index => $method) {
+                    $message .= ($index + 1) . ". {$method->name}\n";
+
+                    if ($method->instructions) {
+                        $message .= "   {$method->instructions}\n";
+                    }
+                }
+
+                $message .= "\nReply with the number of your preferred payment method.";
+            } else {
+                $message .= "Thank you for your payment. Your order is being processed.";
+            }
+        }
+
+        return $this->sendMessage($order->customer_phone, $message);
+    }
+
+    /**
+     * Send payment notification to customer.
+     */
+    public function sendPaymentConfirmation(PaymentTransaction $transaction)
+    {
+        $order = $transaction->order;
+        $paymentMethod = $transaction->paymentMethod;
+
+        $message = "Your payment of \${$transaction->amount} for Order #{$order->id} via {$paymentMethod->name} has been confirmed. Thank you!";
+
+        if ($order->status === Order::STATUS_PENDING) {
+            $message .= "\n\nYour order is now being processed. We'll update you when it's ready for delivery.";
+        } elseif ($order->status === Order::STATUS_IN_PROGRESS) {
+            $message .= "\n\nYour order is already in progress. We'll update you when your delivery is on the way.";
+        }
+
+        return $this->sendMessage($order->customer_phone, $message);
+    }
+
+    /**
+     * Ask customer to provide EcoCash phone number.
+     */
+    public function requestEcocashNumber(Order $order)
+    {
+        $message = "To pay for Order #{$order->id} with EcoCash, please reply with your EcoCash registered phone number.";
+        return $this->sendMessage($order->customer_phone, $message);
+    }
+
+    /**
+     * Notify about EcoCash payment initiation.
+     */
+    public function notifyEcocashInitiated(Order $order, $phoneNumber)
+    {
+        $message = "We've initiated an EcoCash payment request to {$phoneNumber} for Order #{$order->id}.\n\n";
+        $message .= "Please check your phone for the payment prompt and enter your PIN to complete the transaction.";
+
+        return $this->sendMessage($order->customer_phone, $message);
+    }
+
+    /**
+     * Provide the PayPal payment link.
+     */
+    public function sendPaypalLink(Order $order, $paypalUrl)
+    {
+        $message = "To pay for Order #{$order->id} with PayPal, please use the following link:\n\n";
+        $message .= $paypalUrl;
+
+        return $this->sendMessage($order->customer_phone, $message);
+    }
+
+    /**
+     * Send bank transfer instructions.
+     */
+    public function sendBankTransferInstructions(Order $order, BankTransferDetail $bankDetails)
+    {
+        $transaction = $order->paymentTransactions()
+            ->whereHas('paymentMethod', function ($query) {
+                $query->where('code', 'bank_transfer');
+            })
+            ->latest()
+            ->first();
+
+        $message = "Bank Transfer Instructions for Order #{$order->id}:\n\n";
+        $message .= "Amount: \$" . ($transaction ? $transaction->amount : $order->getTotalAmount()) . "\n\n";
+        $message .= "Bank: {$bankDetails->bank_name}\n";
+        $message .= "Account Name: {$bankDetails->account_name}\n";
+        $message .= "Account Number: {$bankDetails->account_number}\n";
+
+        if ($bankDetails->branch_code) {
+            $message .= "Branch Code: {$bankDetails->branch_code}\n";
+        }
+
+        if ($bankDetails->swift_code) {
+            $message .= "SWIFT/BIC: {$bankDetails->swift_code}\n";
+        }
+
+        $message .= "\nReference: ORDER-{$order->id}\n\n";
+
+        if ($bankDetails->instructions) {
+            $message .= "Additional Instructions:\n{$bankDetails->instructions}\n\n";
+        }
+
+        $message .= "Once you've completed the transfer, please reply with 'PAID' and we'll verify your payment.";
+
+        return $this->sendMessage($order->customer_phone, $message);
+    }
+
+    /**
+     * Confirm cash on delivery arrangement.
+     */
+    public function confirmCashOnDelivery(Order $order)
+    {
+        $transaction = $order->paymentTransactions()
+            ->whereHas('paymentMethod', function ($query) {
+                $query->where('code', 'cod');
+            })
+            ->latest()
+            ->first();
+
+        $message = "Your Order #{$order->id} has been confirmed with Cash on Delivery payment option.\n\n";
+        $message .= "Amount due: \$" . ($transaction ? $transaction->amount : $order->getTotalAmount()) . "\n\n";
+        $message .= "Please have the exact amount ready when your delivery arrives.";
+
+        return $this->sendMessage($order->customer_phone, $message);
     }
 }
