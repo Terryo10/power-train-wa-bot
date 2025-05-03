@@ -19,6 +19,7 @@ return new class extends Migration
             $table->string('status')->default('pending'); // pending, in_progress, delivered
             $table->unsignedBigInteger('driver_id')->nullable();
             $table->foreign('driver_id')->references('id')->on('drivers')->nullOnDelete();
+            $table->string('payment_status')->default('unpaid');
             $table->timestamps();
         });
     }

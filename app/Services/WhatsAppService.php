@@ -27,7 +27,7 @@ class WhatsAppService
         'load_selection' => 'HXa08b4b9c261b3d248118f869688b6178',
         'quantity_selection' => 'HX4c3bdf19c88fa638bd7eebb022493822',
         'order_confirmation' => 'HX4567890123abcdef4567890123abcdef',
-        'building_materials' => 'HX00783430c832f59c22d78538760d8555',
+        'building_materials' => 'HX5678901234abcdef5678901234abcdef',
         'driver_actions' => 'HX6789012345abcdef6789012345abcdef',
     ];
 
@@ -59,18 +59,45 @@ class WhatsAppService
      * @param string $message Message content
      * @return \Twilio\Rest\Api\V2010\Account\MessageInstance
      */
+    // Modified sendMessage method in WhatsAppService.php
     public function sendMessage($to, $message)
     {
         try {
-            return $this->client->messages->create(
-                "whatsapp:$to",
+            // Log the attempt
+            Log::info('Attempting to send WhatsApp message', [
+                'to' => $to,
+                'message_length' => strlen($message)
+            ]);
+
+            // Ensure phone has correct format (no spaces, +, etc)
+            $to = preg_replace('/[^0-9]/', '', $to);
+
+            // Make sure "whatsapp:" prefix is only added if it's not already there
+            $toWithPrefix = strpos($to, 'whatsapp:') === 0 ? $to : "whatsapp:$to";
+            $fromWithPrefix = strpos($this->fromNumber, 'whatsapp:') === 0 ?
+                $this->fromNumber : "whatsapp:{$this->fromNumber}";
+
+            $result = $this->client->messages->create(
+                $toWithPrefix,
                 [
-                    'from' => "whatsapp:{$this->fromNumber}",
+                    'from' => $fromWithPrefix,
                     'body' => $message
                 ]
             );
+
+            // Log success
+            Log::info('WhatsApp message sent successfully', [
+                'to' => $to,
+                'message_sid' => $result->sid
+            ]);
+
+            return $result;
         } catch (\Exception $e) {
-            Log::error('WhatsApp message sending failed: ' . $e->getMessage());
+            Log::error('WhatsApp message sending failed', [
+                'to' => $to,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
             throw $e;
         }
     }
@@ -874,8 +901,20 @@ class WhatsAppService
     /**
      * Notify a driver about a new order assignment with interactive buttons.
      */
+    // Add these debug lines to app/Services/WhatsAppService.php in the notifyDriver method
     public function notifyDriver(Driver $driver, Order $order)
     {
+        // Add this debug line to check if method is being called
+        Log::info('Attempting to notify driver', [
+            'driver_id' => $driver->id,
+            'driver_name' => $driver->name,
+            'driver_phone' => $driver->phone,
+            'order_id' => $order->id
+        ]);
+
+        // Ensure phone number is in correct format (remove any formatting)
+        $phone = preg_replace('/[^0-9]/', '', $driver->phone);
+
         // Variables for driver notification template
         $variables = [
             '1' => $order->id, // Order ID
@@ -894,7 +933,7 @@ class WhatsAppService
             "Delivery to: {$order->delivery_address}\n\n" .
             "Products:\n{$itemDetails}\n" .
             "Reply with one of the following:\n" .
-            "✔ Start Loading\n" .
+            "✓ Start Loading\n" .
             "🚚 Start Delivery\n" .
             "📦 Delivered";
 
@@ -905,11 +944,29 @@ class WhatsAppService
         $order->driver_id = $driver->id;
         $order->save();
 
-        return $this->sendInteractiveMessage(
-            $driver->phone,
-            'driver_actions',
-            $variables,
-            $fallbackMessage
-        );
+        try {
+            // Try direct message if interactive message fails
+            $result = $this->sendInteractiveMessage(
+                $phone,
+                'driver_actions',
+                $variables,
+                $fallbackMessage
+            );
+
+            Log::info('Driver notification sent successfully', [
+                'driver_phone' => $phone,
+                'message_sid' => $result->sid ?? 'unknown'
+            ]);
+
+            return $result;
+        } catch (\Exception $e) {
+            // Log the error and try sending a regular message instead
+            Log::error('Failed to send interactive message to driver. Trying fallback.', [
+                'error' => $e->getMessage(),
+                'driver_phone' => $phone
+            ]);
+
+            return $this->sendMessage($phone, $fallbackMessage);
+        }
     }
 }

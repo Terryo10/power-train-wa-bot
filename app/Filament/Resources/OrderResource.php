@@ -15,6 +15,7 @@ use Filament\Tables\Table;
 use Filament\Tables;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class OrderResource extends Resource
 {
@@ -33,16 +34,16 @@ class OrderResource extends Resource
                         Forms\Components\TextInput::make('customer_name')
                             ->required()
                             ->maxLength(255),
-                        
+
                         Forms\Components\TextInput::make('customer_phone')
                             ->required()
                             ->tel()
                             ->maxLength(255),
-                        
+
                         Forms\Components\Textarea::make('delivery_address')
                             ->required()
                             ->maxLength(65535),
-                        
+
                         Forms\Components\Select::make('status')
                             ->options([
                                 Order::STATUS_PENDING => 'Pending',
@@ -50,7 +51,7 @@ class OrderResource extends Resource
                                 Order::STATUS_DELIVERED => 'Delivered',
                             ])
                             ->required(),
-                        
+
                         Forms\Components\Select::make('driver_id')
                             ->label('Driver')
                             ->options(function () {
@@ -64,11 +65,11 @@ class OrderResource extends Resource
                     ->schema([
                         Forms\Components\Placeholder::make('created_at')
                             ->label('Created at')
-                            ->content(fn (Order $record): ?string => $record->created_at?->diffForHumans()),
+                            ->content(fn(Order $record): ?string => $record->created_at?->diffForHumans()),
 
                         Forms\Components\Placeholder::make('updated_at')
                             ->label('Last updated at')
-                            ->content(fn (Order $record): ?string => $record->updated_at?->diffForHumans()),
+                            ->content(fn(Order $record): ?string => $record->updated_at?->diffForHumans()),
                     ])
                     ->columns(2),
             ]);
@@ -81,24 +82,24 @@ class OrderResource extends Resource
                 Tables\Columns\TextColumn::make('id')
                     ->label('Order #')
                     ->sortable(),
-                
+
                 Tables\Columns\TextColumn::make('customer_name')
                     ->searchable(),
-                
+
                 Tables\Columns\TextColumn::make('customer_phone')
                     ->searchable(),
-                
+
                 Tables\Columns\BadgeColumn::make('status')
                     ->colors([
                         'warning' => Order::STATUS_PENDING,
                         'primary' => Order::STATUS_IN_PROGRESS,
                         'success' => Order::STATUS_DELIVERED,
                     ]),
-                
+
                 Tables\Columns\TextColumn::make('driver.name')
                     ->label('Driver')
                     ->placeholder('Unassigned'),
-                
+
                 Tables\Columns\TextColumn::make('created_at')
                     ->dateTime()
                     ->sortable(),
@@ -110,14 +111,14 @@ class OrderResource extends Resource
                         Order::STATUS_IN_PROGRESS => 'In Progress',
                         Order::STATUS_DELIVERED => 'Delivered',
                     ]),
-                
+
                 Tables\Filters\SelectFilter::make('driver')
                     ->relationship('driver', 'name')
                     ->label('Driver'),
             ])
             ->actions([
                 Tables\Actions\EditAction::make(),
-                
+                // Add this to app/Filament/Resources/OrderResource.php in the assign_driver action
                 Tables\Actions\Action::make('assign_driver')
                     ->label('Assign Driver')
                     ->icon('heroicon-o-truck')
@@ -132,29 +133,57 @@ class OrderResource extends Resource
                     ])
                     ->action(function (Order $record, array $data, WhatsAppService $whatsAppService) {
                         DB::beginTransaction();
-                        
+
                         try {
                             $driver = Driver::findOrFail($data['driver_id']);
-                            
+
+                            // Log the attempt
+                            Log::info('Assigning driver to order', [
+                                'order_id' => $record->id,
+                                'driver_id' => $driver->id,
+                                'driver_name' => $driver->name,
+                                'driver_phone' => $driver->phone
+                            ]);
+
                             // Update order
                             $record->driver_id = $driver->id;
                             $record->status = Order::STATUS_IN_PROGRESS;
                             $record->save();
-                            
+
                             // Send WhatsApp notification to the driver
-                            $whatsAppService->notifyDriver($driver, $record);
-                            
-                            // Show success notification
-                            Notification::make()
-                                ->title('Driver Assigned')
-                                ->body("Order #{$record->id} has been assigned to {$driver->name}")
-                                ->success()
-                                ->send();
-                            
+                            try {
+                                $whatsAppService->notifyDriver($driver, $record);
+
+                                // Show success notification
+                                Notification::make()
+                                    ->title('Driver Assigned')
+                                    ->body("Order #{$record->id} has been assigned to {$driver->name}. WhatsApp notification sent.")
+                                    ->success()
+                                    ->send();
+                            } catch (\Exception $e) {
+                                // If WhatsApp notification fails, still proceed with assignment
+                                Log::error('Failed to send WhatsApp notification to driver', [
+                                    'error' => $e->getMessage(),
+                                    'driver_id' => $driver->id,
+                                    'driver_phone' => $driver->phone
+                                ]);
+
+                                Notification::make()
+                                    ->title('Driver Assigned')
+                                    ->body("Order #{$record->id} has been assigned to {$driver->name}. Warning: WhatsApp notification failed.")
+                                    ->warning()
+                                    ->send();
+                            }
+
                             DB::commit();
                         } catch (\Exception $e) {
                             DB::rollBack();
-                            
+
+                            Log::error('Failed to assign driver', [
+                                'error' => $e->getMessage(),
+                                'trace' => $e->getTraceAsString()
+                            ]);
+
                             Notification::make()
                                 ->title('Error')
                                 ->body('Failed to assign driver: ' . $e->getMessage())
@@ -162,22 +191,24 @@ class OrderResource extends Resource
                                 ->send();
                         }
                     })
-                    ->visible(fn (Order $record) => 
+                    ->visible(
+                        fn(Order $record) =>
                         $record->status === Order::STATUS_PENDING && $record->driver_id === null
-                    ),
+                    )
+
             ])
             ->bulkActions([
                 Tables\Actions\DeleteBulkAction::make(),
             ]);
     }
-    
+
     public static function getRelations(): array
     {
         return [
             RelationManagers\ItemsRelationManager::class,
         ];
     }
-    
+
     public static function getPages(): array
     {
         return [
@@ -186,7 +217,7 @@ class OrderResource extends Resource
             'edit' => Pages\EditOrder::route('/{record}/edit'),
         ];
     }
-    
+
     public static function getEloquentQuery(): Builder
     {
         return parent::getEloquentQuery()
