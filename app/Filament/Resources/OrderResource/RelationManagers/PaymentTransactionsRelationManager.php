@@ -28,17 +28,17 @@ class PaymentTransactionsRelationManager extends RelationManager
                     ->required()
                     ->maxLength(255)
                     ->disabled(),
-                
+
                 Forms\Components\Select::make('payment_method_id')
                     ->relationship('paymentMethod', 'name')
                     ->required()
                     ->disabled(),
-                
+
                 Forms\Components\TextInput::make('amount')
                     ->required()
                     ->numeric()
                     ->prefix('$'),
-                
+
                 Forms\Components\Select::make('status')
                     ->options([
                         'pending' => 'Pending',
@@ -48,14 +48,14 @@ class PaymentTransactionsRelationManager extends RelationManager
                         'refunded' => 'Refunded',
                     ])
                     ->required(),
-                
+
                 Forms\Components\TextInput::make('gateway_reference')
                     ->maxLength(255),
-                
+
                 Forms\Components\TextInput::make('customer_phone')
                     ->tel()
                     ->maxLength(255),
-                
+
                 Forms\Components\TextInput::make('customer_email')
                     ->email()
                     ->maxLength(255),
@@ -68,14 +68,14 @@ class PaymentTransactionsRelationManager extends RelationManager
             ->columns([
                 Tables\Columns\TextColumn::make('reference')
                     ->searchable(),
-                
+
                 Tables\Columns\TextColumn::make('paymentMethod.name')
                     ->label('Payment Method'),
-                
+
                 Tables\Columns\TextColumn::make('amount')
                     ->money('USD')
                     ->sortable(),
-                
+
                 Tables\Columns\BadgeColumn::make('status')
                     ->colors([
                         'secondary' => 'pending',
@@ -84,11 +84,11 @@ class PaymentTransactionsRelationManager extends RelationManager
                         'danger' => 'failed',
                         'primary' => 'refunded',
                     ]),
-                
+
                 Tables\Columns\TextColumn::make('created_at')
                     ->dateTime()
                     ->sortable(),
-                
+
                 Tables\Columns\TextColumn::make('paid_at')
                     ->dateTime()
                     ->sortable(),
@@ -108,20 +108,20 @@ class PaymentTransactionsRelationManager extends RelationManager
             ])
             ->actions([
                 Tables\Actions\ViewAction::make(),
-                
+
                 Tables\Actions\EditAction::make(),
-                
+
                 Tables\Actions\Action::make('verify_bank_transfer')
                     ->label('Verify Bank Transfer')
                     ->icon('heroicon-o-check')
                     ->color('success')
                     ->action(function (PaymentTransaction $record) {
                         DB::beginTransaction();
-                        
+
                         try {
                             $bankService = new BankTransferPaymentService();
                             $result = $bankService->verifyPayment($record);
-                            
+
                             if ($result['success']) {
                                 Notification::make()
                                     ->title('Payment Verified')
@@ -135,11 +135,11 @@ class PaymentTransactionsRelationManager extends RelationManager
                                     ->danger()
                                     ->send();
                             }
-                            
+
                             DB::commit();
                         } catch (\Exception $e) {
                             DB::rollBack();
-                            
+
                             Notification::make()
                                 ->title('Error')
                                 ->body('Failed to verify payment: ' . $e->getMessage())
@@ -147,22 +147,23 @@ class PaymentTransactionsRelationManager extends RelationManager
                                 ->send();
                         }
                     })
-                    ->visible(fn (PaymentTransaction $record) => 
-                        $record->paymentMethod?->code === 'bank_transfer' && 
-                        in_array($record->status, ['pending', 'processing'])
+                    ->visible(
+                        fn(PaymentTransaction $record) =>
+                        $record->paymentMethod?->code === 'bank_transfer' &&
+                            in_array($record->status, ['pending', 'processing'])
                     ),
-                
+
                 Tables\Actions\Action::make('mark_cod_as_paid')
                     ->label('Mark as Paid')
-                    ->icon('heroicon-o-cash')
+                    ->icon('heroicon-o-currency-dollar')
                     ->color('success')
                     ->action(function (PaymentTransaction $record) {
                         DB::beginTransaction();
-                        
+
                         try {
                             $codService = new CashOnDeliveryPaymentService();
                             $result = $codService->markAsCompleted($record);
-                            
+
                             if ($result['success']) {
                                 Notification::make()
                                     ->title('Payment Completed')
@@ -176,11 +177,11 @@ class PaymentTransactionsRelationManager extends RelationManager
                                     ->danger()
                                     ->send();
                             }
-                            
+
                             DB::commit();
                         } catch (\Exception $e) {
                             DB::rollBack();
-                            
+
                             Notification::make()
                                 ->title('Error')
                                 ->body('Failed to mark payment as completed: ' . $e->getMessage())
@@ -188,9 +189,10 @@ class PaymentTransactionsRelationManager extends RelationManager
                                 ->send();
                         }
                     })
-                    ->visible(fn (PaymentTransaction $record) => 
-                        $record->paymentMethod?->code === 'cod' && 
-                        in_array($record->status, ['pending', 'processing'])
+                    ->visible(
+                        fn(PaymentTransaction $record) =>
+                        $record->paymentMethod?->code === 'cod' &&
+                            in_array($record->status, ['pending', 'processing'])
                     ),
             ])
             ->bulkActions([

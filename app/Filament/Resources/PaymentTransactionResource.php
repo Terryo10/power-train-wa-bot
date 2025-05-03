@@ -203,7 +203,7 @@ class PaymentTransactionResource extends Resource
                 
                 Tables\Actions\Action::make('mark_cod_as_paid')
                     ->label('Mark as Paid')
-                    ->icon('heroicon-o-cash')
+                    ->icon('heroicon-o-currency-dollar') 
                     ->color('success')
                     ->action(function (PaymentTransaction $record) {
                         DB::beginTransaction();
